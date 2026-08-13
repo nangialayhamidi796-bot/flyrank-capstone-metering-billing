@@ -41,3 +41,20 @@ class GenerateResponse(BaseModel):
     ai_tokens_limit: int
     cost_microcents: int
     duplicate: bool
+
+class UsageAmount(BaseModel):
+    """Used and allowed amounts for one usage category."""
+
+    used: int
+    limit: int
+
+
+class UsageSummaryResponse(BaseModel):
+    """Current monthly usage summary for one tenant."""
+
+    tenant_id: str
+    plan: str
+    status: str
+    api_calls: UsageAmount
+    ai_tokens: UsageAmount
+    cost_microcents: int

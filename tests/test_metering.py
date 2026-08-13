@@ -207,3 +207,45 @@ def test_inactive_subscription_returns_402():
             "Upgrade or update payment."
         )
     }
+
+
+def test_usage_summary_returns_current_totals():
+    """GET /usage should return used amounts and plan limits."""
+
+    tenant_id = create_test_tenant()
+
+    generate_response = client.post(
+        "/generate",
+        json={
+            "tenant_id": tenant_id,
+            "input_tokens": 500,
+            "cached_input_tokens": 100,
+            "output_tokens": 200,
+            "reasoning_tokens": 50,
+        },
+        headers={
+            "Idempotency-Key": "usage-summary-request",
+        },
+    )
+
+    assert generate_response.status_code == 201
+
+    response = client.get(f"/usage/{tenant_id}")
+    response_data = response.json()
+
+    assert response.status_code == 200
+    assert response_data["tenant_id"] == tenant_id
+    assert response_data["plan"] == "free"
+    assert response_data["status"] == "active"
+
+    assert response_data["api_calls"] == {
+        "used": 1,
+        "limit": 1000,
+    }
+
+    assert response_data["ai_tokens"] == {
+        "used": 850,
+        "limit": 100_000,
+    }
+
+    assert response_data["cost_microcents"] == 0

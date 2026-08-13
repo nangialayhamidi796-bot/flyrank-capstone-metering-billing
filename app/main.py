@@ -3,12 +3,14 @@ from sqlalchemy.orm import Session
 
 from app import models
 from app.database import Base, engine, get_db
-from app.metering import record_generate_usage
+from app.metering import get_usage_summary, record_generate_usage
+
 from app.schemas import (
     GenerateRequest,
     GenerateResponse,
     TenantCreate,
     TenantResponse,
+    UsageSummaryResponse,
 )
 from app.services import create_tenant
 
@@ -90,3 +92,20 @@ def generate_endpoint(
     )
 
     return result
+
+
+
+@app.get(
+    "/usage/{tenant_id}",
+    response_model=UsageSummaryResponse,
+)
+def usage_summary_endpoint(
+    tenant_id: str,
+    database: Session = Depends(get_db),
+):
+    """Return current monthly usage for one tenant."""
+
+    return get_usage_summary(
+        database=database,
+        tenant_id=tenant_id,
+    )
