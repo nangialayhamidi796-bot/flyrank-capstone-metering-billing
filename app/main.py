@@ -1,19 +1,29 @@
-from fastapi import Depends, FastAPI, status
+from fastapi import Depends, FastAPI, Header, status
 from sqlalchemy.orm import Session
-from app import models
 
+from app import models
 from app.database import Base, engine, get_db
-from app.schemas import TenantCreate, TenantResponse
+from app.metering import record_generate_usage
+from app.schemas import (
+    GenerateRequest,
+    GenerateResponse,
+    TenantCreate,
+    TenantResponse,
+)
 from app.services import create_tenant
 
 
+# Create any database tables that do not exist yet.
 Base.metadata.create_all(bind=engine)
 
 
-
+# Create the FastAPI application before defining endpoints.
 app = FastAPI(
     title="Usage Metering and Billing Engine",
-    description="API for usage tracking, quota enforcement, and subscription billing.",
+    description=(
+        "API for usage tracking, quota enforcement, "
+        "and subscription billing."
+    ),
     version="1.0.0",
 )
 
@@ -21,10 +31,12 @@ app = FastAPI(
 @app.get("/health")
 def health_check():
     """Confirm that the backend application is running."""
+
     return {
         "status": "healthy",
         "service": "usage-metering-billing-engine",
     }
+
 
 @app.post(
     "/tenants",
@@ -48,3 +60,33 @@ def create_tenant_endpoint(
         plan=tenant.subscription.plan.name.value,
         status=tenant.subscription.status.value,
     )
+
+
+@app.post(
+    "/generate",
+    response_model=GenerateResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def generate_endpoint(
+    usage_data: GenerateRequest,
+    idempotency_key: str = Header(
+        ...,
+        alias="Idempotency-Key",
+        min_length=1,
+        max_length=255,
+    ),
+    database: Session = Depends(get_db),
+):
+    """Record one simulated, billable AI generation."""
+
+    result = record_generate_usage(
+        database=database,
+        tenant_id=usage_data.tenant_id,
+        idempotency_key=idempotency_key,
+        input_tokens=usage_data.input_tokens,
+        cached_input_tokens=usage_data.cached_input_tokens,
+        output_tokens=usage_data.output_tokens,
+        reasoning_tokens=usage_data.reasoning_tokens,
+    )
+
+    return result
