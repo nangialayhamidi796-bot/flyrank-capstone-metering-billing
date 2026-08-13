@@ -117,6 +117,26 @@ def local_subscription_status(
 
     return SubscriptionStatus.CANCELED
 
+def stripe_object_to_dict(value):
+    """Recursively convert Stripe objects into Python values."""
+
+    if hasattr(value, "_data"):
+        value = value._data
+
+    if isinstance(value, dict):
+        return {
+            key: stripe_object_to_dict(item)
+            for key, item in value.items()
+        }
+
+    if isinstance(value, list):
+        return [
+            stripe_object_to_dict(item)
+            for item in value
+        ]
+
+    return value
+
 
 def process_stripe_webhook(
     database: Session,
@@ -164,6 +184,11 @@ def process_stripe_webhook(
 
     stripe_object = event["data"]["object"]
 
+    # Stripe returns a custom StripeObject.
+    # Convert it to a normal dictionary for safe .get() calls.
+    if hasattr(stripe_object, "to_dict_recursive"):
+        stripe_object = stripe_object.to_dict_recursive()
+
     if event_type == "checkout.session.completed":
         handle_checkout_completed(
             database=database,
@@ -194,7 +219,17 @@ def process_stripe_webhook(
         "duplicate": False,
         "event_id": event_id,
     }
+def stripe_value(
+    stripe_object,
+    key: str,
+    default=None,
+):
+    """Read a value from either a dictionary or StripeObject."""
 
+    try:
+        return stripe_object[key]
+    except (KeyError, TypeError):
+        return default
 
 def handle_checkout_completed(
     database: Session,
@@ -202,18 +237,24 @@ def handle_checkout_completed(
 ) -> None:
     """Upgrade a tenant after completed Checkout."""
 
-    tenant_id = (
-        stripe_object.get("client_reference_id")
-        or stripe_object.get(
-            "metadata",
-            {},
-        ).get("tenant_id")
+    metadata = stripe_value(
+        stripe_object,
+        "metadata",
+        {},
     )
 
-    tenant = database.get(
-        Tenant,
-        tenant_id,
+    tenant_id = (
+        stripe_value(
+            stripe_object,
+            "client_reference_id",
+        )
+        or stripe_value(
+            metadata,
+            "tenant_id",
+        )
     )
+
+    tenant = database.get(Tenant, tenant_id)
 
     if tenant is None:
         raise HTTPException(
@@ -222,34 +263,31 @@ def handle_checkout_completed(
         )
 
     pro_plan = database.scalar(
-        select(Plan).where(
-            Plan.name == PlanName.PRO
-        )
+        select(Plan).where(Plan.name == PlanName.PRO)
     )
 
     if pro_plan is None:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=(
-                "Pro plan is missing. "
-                "Run the seed command first."
-            ),
+            detail="Pro plan is missing. Run the seed command first.",
         )
 
     tenant.subscription.plan = pro_plan
     tenant.subscription.status = SubscriptionStatus.ACTIVE
-    tenant.subscription.stripe_customer_id = (
-        stripe_object.get("customer")
+    tenant.subscription.stripe_customer_id = stripe_value(
+        stripe_object,
+        "customer",
     )
-    tenant.subscription.stripe_subscription_id = (
-        stripe_object.get("subscription")
+    tenant.subscription.stripe_subscription_id = stripe_value(
+        stripe_object,
+        "subscription",
     )
 
 
 def handle_subscription_event(
     database: Session,
     event_type: str,
-    stripe_object,
+    stripe_object: dict,
 ) -> None:
     """Synchronize a Stripe subscription with a tenant."""
 
@@ -267,10 +305,7 @@ def handle_subscription_event(
     )
 
     if subscription is None and tenant_id:
-        tenant = database.get(
-            Tenant,
-            tenant_id,
-        )
+        tenant = database.get(Tenant, tenant_id)
 
         if tenant is not None:
             subscription = tenant.subscription
@@ -278,12 +313,8 @@ def handle_subscription_event(
     if subscription is None:
         return
 
-    subscription.stripe_subscription_id = (
-        stripe_subscription_id
-    )
-    subscription.stripe_customer_id = (
-        stripe_object.get("customer")
-    )
+    subscription.stripe_subscription_id = stripe_subscription_id
+    subscription.stripe_customer_id = stripe_object.get("customer")
     subscription.current_period_start = stripe_datetime(
         stripe_object.get("current_period_start")
     )
@@ -293,9 +324,7 @@ def handle_subscription_event(
 
     if event_type == "customer.subscription.deleted":
         free_plan = database.scalar(
-            select(Plan).where(
-                Plan.name == PlanName.FREE
-            )
+            select(Plan).where(Plan.name == PlanName.FREE)
         )
 
         if free_plan is not None:
@@ -305,9 +334,7 @@ def handle_subscription_event(
         return
 
     pro_plan = database.scalar(
-        select(Plan).where(
-            Plan.name == PlanName.PRO
-        )
+        select(Plan).where(Plan.name == PlanName.PRO)
     )
 
     if pro_plan is not None:
