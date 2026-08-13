@@ -1,0 +1,22 @@
+services:
+  database:
+    image: postgres:17-alpine
+    container_name: metering-billing-postgres
+    environment:
+      POSTGRES_DB: metering_billing
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - metering_billing_data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U postgres -d metering_billing
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  metering_billing_data:
