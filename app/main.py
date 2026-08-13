@@ -1,11 +1,20 @@
-from fastapi import Depends, FastAPI, Header, status
+from fastapi import (
+    Depends,
+    FastAPI,
+    Header,
+    Request,
+    status,
+)
 from sqlalchemy.orm import Session
 
 from app import models
 from app.database import Base, engine, get_db
-from app.metering import get_usage_summary, record_generate_usage
-
+from app.metering import (
+    get_usage_summary,
+    record_generate_usage,
+)
 from app.schemas import (
+    CheckoutResponse,
     GenerateRequest,
     GenerateResponse,
     TenantCreate,
@@ -13,13 +22,16 @@ from app.schemas import (
     UsageSummaryResponse,
 )
 from app.services import create_tenant
+from app.stripe_service import (
+    create_checkout_session,
+    process_stripe_webhook,
+)
 
 
-# Create any database tables that do not exist yet.
+# Create database tables that do not exist yet.
 Base.metadata.create_all(bind=engine)
 
 
-# Create the FastAPI application before defining endpoints.
 app = FastAPI(
     title="Usage Metering and Billing Engine",
     description=(
@@ -81,7 +93,7 @@ def generate_endpoint(
 ):
     """Record one simulated, billable AI generation."""
 
-    result = record_generate_usage(
+    return record_generate_usage(
         database=database,
         tenant_id=usage_data.tenant_id,
         idempotency_key=idempotency_key,
@@ -90,9 +102,6 @@ def generate_endpoint(
         output_tokens=usage_data.output_tokens,
         reasoning_tokens=usage_data.reasoning_tokens,
     )
-
-    return result
-
 
 
 @app.get(
@@ -108,4 +117,40 @@ def usage_summary_endpoint(
     return get_usage_summary(
         database=database,
         tenant_id=tenant_id,
+    )
+
+
+@app.post(
+    "/checkout/{tenant_id}",
+    response_model=CheckoutResponse,
+)
+def checkout_endpoint(
+    tenant_id: str,
+    database: Session = Depends(get_db),
+):
+    """Create a Stripe Sandbox Checkout session."""
+
+    return create_checkout_session(
+        database=database,
+        tenant_id=tenant_id,
+    )
+
+
+@app.post("/webhooks/stripe")
+async def stripe_webhook_endpoint(
+    request: Request,
+    stripe_signature: str = Header(
+        ...,
+        alias="Stripe-Signature",
+    ),
+    database: Session = Depends(get_db),
+):
+    """Verify and process Stripe webhook events."""
+
+    payload = await request.body()
+
+    return process_stripe_webhook(
+        database=database,
+        payload=payload,
+        signature=stripe_signature,
     )

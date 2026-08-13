@@ -58,3 +58,9 @@ class UsageSummaryResponse(BaseModel):
     api_calls: UsageAmount
     ai_tokens: UsageAmount
     cost_microcents: int
+
+class CheckoutResponse(BaseModel):
+    """Stripe Checkout session information."""
+
+    checkout_url: str
+    session_id: str
