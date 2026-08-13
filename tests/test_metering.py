@@ -248,4 +248,4 @@ def test_usage_summary_returns_current_totals():
         "limit": 100_000,
     }
 
-    assert response_data["cost_microcents"] == 0
+    assert response_data["cost_microcents"] == 377_500

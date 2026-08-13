@@ -12,6 +12,7 @@ from app.models import (
     UsageEvent,
     UsageType,
 )
+from app.pricing import calculate_token_cost_microcents
 
 
 def current_month_start() -> datetime:
@@ -52,6 +53,7 @@ def create_request_hash(
 
     return hashlib.sha256(encoded_data).hexdigest()
 
+
 def get_monthly_usage(
     database: Session,
     tenant_id: str,
@@ -63,8 +65,14 @@ def get_monthly_usage(
     result = database.execute(
         select(
             func.count(UsageEvent.id),
-            func.coalesce(func.sum(UsageEvent.quantity), 0),
-            func.coalesce(func.sum(UsageEvent.cost_microcents), 0),
+            func.coalesce(
+                func.sum(UsageEvent.quantity),
+                0,
+            ),
+            func.coalesce(
+                func.sum(UsageEvent.cost_microcents),
+                0,
+            ),
         ).where(
             UsageEvent.tenant_id == tenant_id,
             UsageEvent.created_at >= month_start,
@@ -75,7 +83,12 @@ def get_monthly_usage(
     ai_tokens_used = int(result[1])
     cost_microcents = int(result[2])
 
-    return api_calls_used, ai_tokens_used, cost_microcents
+    return (
+        api_calls_used,
+        ai_tokens_used,
+        cost_microcents,
+    )
+
 
 def record_generate_usage(
     database: Session,
@@ -86,10 +99,12 @@ def record_generate_usage(
     output_tokens: int,
     reasoning_tokens: int,
 ) -> dict:
-    """Validate and record one idempotent billable AI action."""
+    """Validate and record one idempotent billable action."""
 
     tenant = database.scalar(
-        select(Tenant).where(Tenant.id == tenant_id)
+        select(Tenant).where(
+            Tenant.id == tenant_id
+        )
     )
 
     if tenant is None:
@@ -103,7 +118,10 @@ def record_generate_usage(
     if subscription.status != SubscriptionStatus.ACTIVE:
         raise HTTPException(
             status_code=status.HTTP_402_PAYMENT_REQUIRED,
-            detail="The subscription is not active. Upgrade or update payment.",
+            detail=(
+                "The subscription is not active. "
+                "Upgrade or update payment."
+            ),
         )
 
     request_hash = create_request_hash(
@@ -117,7 +135,8 @@ def record_generate_usage(
     existing_event = database.scalar(
         select(UsageEvent).where(
             UsageEvent.tenant_id == tenant_id,
-            UsageEvent.idempotency_key == idempotency_key,
+            UsageEvent.idempotency_key
+            == idempotency_key,
         )
     )
 
@@ -131,7 +150,11 @@ def record_generate_usage(
                 ),
             )
 
-        api_calls_used, ai_tokens_used, total_cost = get_monthly_usage(
+        (
+            api_calls_used,
+            ai_tokens_used,
+            total_cost,
+        ) = get_monthly_usage(
             database=database,
             tenant_id=tenant_id,
         )
@@ -141,9 +164,13 @@ def record_generate_usage(
             "tenant_id": tenant_id,
             "idempotency_key": idempotency_key,
             "api_calls_used": api_calls_used,
-            "api_calls_limit": subscription.plan.api_call_limit,
+            "api_calls_limit": (
+                subscription.plan.api_call_limit
+            ),
             "ai_tokens_used": ai_tokens_used,
-            "ai_tokens_limit": subscription.plan.ai_token_limit,
+            "ai_tokens_limit": (
+                subscription.plan.ai_token_limit
+            ),
             "cost_microcents": total_cost,
             "duplicate": True,
         }
@@ -155,24 +182,47 @@ def record_generate_usage(
         + reasoning_tokens
     )
 
-    api_calls_used, ai_tokens_used, total_cost = get_monthly_usage(
+    (
+        api_calls_used,
+        ai_tokens_used,
+        total_cost,
+    ) = get_monthly_usage(
         database=database,
         tenant_id=tenant_id,
     )
 
-    if api_calls_used + 1 > subscription.plan.api_call_limit:
+    if (
+        api_calls_used + 1
+        > subscription.plan.api_call_limit
+    ):
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail="Monthly API-call quota exceeded.",
-            headers={"Retry-After": "3600"},
+            headers={
+                "Retry-After": "3600",
+            },
         )
 
-    if ai_tokens_used + requested_tokens > subscription.plan.ai_token_limit:
+    if (
+        ai_tokens_used + requested_tokens
+        > subscription.plan.ai_token_limit
+    ):
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail="Monthly AI-token quota exceeded.",
-            headers={"Retry-After": "3600"},
+            headers={
+                "Retry-After": "3600",
+            },
         )
+
+    event_cost_microcents = (
+        calculate_token_cost_microcents(
+            input_tokens=input_tokens,
+            cached_input_tokens=cached_input_tokens,
+            output_tokens=output_tokens,
+            reasoning_tokens=reasoning_tokens,
+        )
+    )
 
     usage_event = UsageEvent(
         tenant_id=tenant_id,
@@ -184,7 +234,7 @@ def record_generate_usage(
         cached_input_tokens=cached_input_tokens,
         output_tokens=output_tokens,
         reasoning_tokens=reasoning_tokens,
-        cost_microcents=0,
+        cost_microcents=event_cost_microcents,
     )
 
     database.add(usage_event)
@@ -196,20 +246,32 @@ def record_generate_usage(
         "tenant_id": tenant_id,
         "idempotency_key": idempotency_key,
         "api_calls_used": api_calls_used + 1,
-        "api_calls_limit": subscription.plan.api_call_limit,
-        "ai_tokens_used": ai_tokens_used + requested_tokens,
-        "ai_tokens_limit": subscription.plan.ai_token_limit,
-        "cost_microcents": total_cost,
+        "api_calls_limit": (
+            subscription.plan.api_call_limit
+        ),
+        "ai_tokens_used": (
+            ai_tokens_used + requested_tokens
+        ),
+        "ai_tokens_limit": (
+            subscription.plan.ai_token_limit
+        ),
+        "cost_microcents": (
+            total_cost + event_cost_microcents
+        ),
         "duplicate": False,
     }
+
+
 def get_usage_summary(
     database: Session,
     tenant_id: str,
 ) -> dict:
-    """Return the tenant's current plan, usage, limits, and cost."""
+    """Return current plan, usage, limits, and cost."""
 
     tenant = database.scalar(
-        select(Tenant).where(Tenant.id == tenant_id)
+        select(Tenant).where(
+            Tenant.id == tenant_id
+        )
     )
 
     if tenant is None:
@@ -218,7 +280,11 @@ def get_usage_summary(
             detail="Tenant not found.",
         )
 
-    api_calls_used, ai_tokens_used, total_cost = get_monthly_usage(
+    (
+        api_calls_used,
+        ai_tokens_used,
+        total_cost,
+    ) = get_monthly_usage(
         database=database,
         tenant_id=tenant_id,
     )
@@ -240,44 +306,3 @@ def get_usage_summary(
         },
         "cost_microcents": total_cost,
     }
-
-def test_usage_summary_returns_current_totals():
-    """GET /usage should return used amounts and plan limits."""
-
-    tenant_id = create_test_tenant()
-
-    generate_response = client.post(
-        "/generate",
-        json={
-            "tenant_id": tenant_id,
-            "input_tokens": 500,
-            "cached_input_tokens": 100,
-            "output_tokens": 200,
-            "reasoning_tokens": 50,
-        },
-        headers={
-            "Idempotency-Key": "usage-summary-request",
-        },
-    )
-
-    assert generate_response.status_code == 201
-
-    response = client.get(f"/usage/{tenant_id}")
-    response_data = response.json()
-
-    assert response.status_code == 200
-    assert response_data["tenant_id"] == tenant_id
-    assert response_data["plan"] == "free"
-    assert response_data["status"] == "active"
-
-    assert response_data["api_calls"] == {
-        "used": 1,
-        "limit": 1000,
-    }
-
-    assert response_data["ai_tokens"] == {
-        "used": 850,
-        "limit": 100_000,
-    }
-
-    assert response_data["cost_microcents"] == 0
